@@ -1,6 +1,9 @@
+#!/usr/bin/env python
+# -*- coding: utf8 -*-
+
 import struct
 import enum
-
+from randomattribute import *
 
 class MQTTControlType(enum.IntEnum):
     CONNECT = 1
@@ -33,16 +36,16 @@ class MQTTPacket:
         cls = MQTTCommandRegistry.get_cls(self.command)
         self.packet = cls(buf, pos)
 
-    def _encode(self):
+    def encode(self):
         tmp = bytearray()
-        self.packet._encode(tmp)
+        self.packet.encode(tmp)
         buf = bytearray()
         #TODO: how to setup flags (for publish) ?
         buf.append(self.command << 4 | self.flags)
         remaining_length_encode(len(tmp), buf)
         buf.extend(tmp)
         return buf
-        
+
 
     def __repr__(self):
         return '<%s: %r>' % (MQTTControlType(self.command).name, self.packet)
@@ -51,8 +54,13 @@ class MQTTPacket:
 class MQTTCommandRegistry(type):
     register = {}
 
-    def __new__(mcs, name, bases, attrs, **kwargs):
-        cls = super().__new__(mcs, name, bases, attrs)
+    def __new__(mcs, name, bases, dct, **kwargs):
+        # find all descriptors, auto-set their labels
+        for key, meth in dct.items():
+            if isinstance(meth, RandomAttr):
+                meth._label = key
+        # creating and registering the classe
+        cls = super().__new__(mcs, name, bases, dct)
         try:
             cmdname = name[4:].upper()
             cmdvalue = MQTTControlType[cmdname].value
@@ -65,14 +73,30 @@ class MQTTCommandRegistry(type):
     def get_cls(cls, cmd):
         return cls.register[cmd]
 
+
 class MQTTBody(metaclass=MQTTCommandRegistry):
     def __init__(self, buf, pos):
+        self._random = False
         self._decode(buf, pos)
+
+    def encode(self, buf):
+        self._random = True
+        data = self._encode(buf)
+        self._random = False
+        return data
 
     def __repr__(self):
         return '?'
 
 class MQTTConnect(MQTTBody):
+    #protocol = Ascii(range(4,6))
+    clean = Bit()
+    uflag = Bit()
+    pflag = Bit()
+    clientid = Ascii(range(0,23))
+    username = Utf8()
+    userpassword = Binary()
+
     def _decode(self, buf, pos):
         self.protocol, pos = get_utf8_string(buf, pos)
         self.protolevel, pos = get_uint8(buf, pos)
@@ -128,6 +152,9 @@ class MQTTConnect(MQTTBody):
         )
 
 class MQTTConnack(MQTTBody):
+    session_present = Bit()
+    code = Uint8()
+
     def _decode(self, buf, pos):
         flags, pos = get_uint8(buf, pos)
         self.session_present = flags & 0x1
@@ -144,6 +171,9 @@ class MQTTConnack(MQTTBody):
         )
 
 class MQTTPublish(MQTTBody):
+    topic = Utf8()
+    #qos = 
+
     def _decode(self, buf, pos):
         flags = buf[0] & 0xf
         self.dup = (flags >> 3) & 0x1
@@ -172,6 +202,8 @@ class MQTTPublish(MQTTBody):
         )
 
 class MQTTPuback(MQTTBody):
+    #packetid = Uint16()
+
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
 
@@ -184,6 +216,8 @@ class MQTTPuback(MQTTBody):
         )
 
 class MQTTPubrec(MQTTBody):
+    #packetid = Uint16()
+
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
 
@@ -196,6 +230,8 @@ class MQTTPubrec(MQTTBody):
         )
 
 class MQTTPubrel(MQTTBody):
+    #packetid = Uint16()
+
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
 
@@ -208,6 +244,8 @@ class MQTTPubrel(MQTTBody):
         )
 
 class MQTTPubcomp(MQTTBody):
+    #packetid = Uint16()
+
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
 
@@ -220,6 +258,8 @@ class MQTTPubcomp(MQTTBody):
         )
 
 class MQTTSubscribe(MQTTBody):
+    #packetid = Uint16()
+
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
         self.subscriptions = []
@@ -241,6 +281,8 @@ class MQTTSubscribe(MQTTBody):
         )
 
 class MQTTSuback(MQTTBody):
+    #packetid = Uint16()
+
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
         self.codes = []
@@ -260,6 +302,8 @@ class MQTTSuback(MQTTBody):
         )
 
 class MQTTUnsubscribe(MQTTBody):
+    #packetid = Uint16()
+
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
         self.unsubscriptions = []
@@ -279,6 +323,8 @@ class MQTTUnsubscribe(MQTTBody):
         )
 
 class MQTTUnsuback(MQTTBody):
+    #packetid = Uint16()
+
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
 
@@ -401,7 +447,8 @@ def read_paquet(sock):
         data = sock.recv(length + 2 - len(buf))
         buf.extend(data)
     packet = MQTTPacket(buf)
-    print(packet)
-    data = packet._encode()
-    assert data == buf
-    return buf
+    print('GET', packet)
+    data = packet.encode()
+    print('SEND', MQTTPacket(data))
+    #assert data == buf
+    return data
