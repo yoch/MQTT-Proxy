@@ -28,10 +28,14 @@ class MQTTPacket:
         self.command = buf[0] >> 4
         self.flags = buf[0] & 0xf
         self.length = remaining_length_decode(buf)
-        pos = next(i for i in range(1,5) if buf[i] & 128 == 0) + 1
+        self._pos = next(i for i in range(1,5) if buf[i] & 128 == 0) + 1
         #print(buf, 'len:', self.length, 'pos:', pos)
         cls = MQTTCommandRegistry.get_cls(self.command)
-        self.packet = cls(buf, pos)
+        self.packet = cls(buf, self._pos)
+
+    def check(self):
+        assert len(self._data) == self._pos + self.length, 'invalid length'
+        self.packet.check()
 
     def _encode(self):
         tmp = bytearray()
@@ -42,7 +46,6 @@ class MQTTPacket:
         remaining_length_encode(len(tmp), buf)
         buf.extend(tmp)
         return buf
-        
 
     def __repr__(self):
         return '<%s: %r>' % (MQTTControlType(self.command).name, self.packet)
@@ -65,9 +68,14 @@ class MQTTCommandRegistry(type):
     def get_cls(cls, cmd):
         return cls.register[cmd]
 
+
 class MQTTBody(metaclass=MQTTCommandRegistry):
     def __init__(self, buf, pos):
+        self.flags = buf[0] & 0xf
         self._decode(buf, pos)
+
+    def check(self):
+        pass    # default implementation, do nothing
 
     def __repr__(self):
         return '?'
@@ -77,6 +85,7 @@ class MQTTConnect(MQTTBody):
         self.protocol, pos = get_utf8_string(buf, pos)
         self.protolevel, pos = get_uint8(buf, pos)
         cflags, pos = get_uint8(buf, pos)
+        assert (cflags & 0x1) == 0, 'reserved flag'
         self.clean = (cflags & 0x2) >> 1
         self.wflag = (cflags & 0x4) >> 2
         self.wqos = (cflags & 0x18) >> 3
@@ -102,6 +111,14 @@ class MQTTConnect(MQTTBody):
             self.userpassword, pos = get_binary_string(buf, pos)
         else:
             self.userpassword = None
+
+    def check(self):
+        assert self.flags == 0, '[MQTT-3.1.2-3]'
+        assert (self.protocol == 'MQTT' and self.protolevel == 4) or (self.protocol == 'MQIsdp' and self.protolevel == 3), 'invalid or unkown protocol'
+        assert (self.wflag != 0 or self.wqos == 0), '[MQTT-3.1.2-13]'
+        assert self.wqos != 3, '[MQTT-3.1.2-14]'
+        assert (self.wflag != 0 or self.wrflag == 0), '[MQTT-3.1.2-15]'
+        assert (self.uflag != 0 or self.pflag == 0), '[MQTT-3.1.2-22]'
 
     def _encode(self, buf):
         set_utf8_string(self.protocol, buf)
@@ -129,9 +146,13 @@ class MQTTConnect(MQTTBody):
 
 class MQTTConnack(MQTTBody):
     def _decode(self, buf, pos):
-        flags, pos = get_uint8(buf, pos)
-        self.session_present = flags & 0x1
+        cflags, pos = get_uint8(buf, pos)
+        assert (cflags & 0xfe) == 0
+        self.session_present = cflags & 0x1
         self.code, pos = get_uint8(buf, pos)
+
+    def check(self):
+        assert self.flags == 0, 'reserved flags'
 
     def _encode(self, buf):
         set_uint8(self.session_present, buf)
@@ -145,16 +166,20 @@ class MQTTConnack(MQTTBody):
 
 class MQTTPublish(MQTTBody):
     def _decode(self, buf, pos):
-        flags = buf[0] & 0xf
-        self.dup = (flags >> 3) & 0x1
-        self.qos = (flags >> 1) & 0x3
-        self.retain = flags & 0x1
+        self.dup = (self.flags >> 3) & 0x1
+        self.qos = (self.flags >> 1) & 0x3
+        self.retain = self.flags & 0x1
         self.topic, pos = get_utf8_string(buf, pos)
         if self.qos > 0:
             self.packetid, pos = get_uint16(buf, pos)
         else:
             self.packetid = None
         self.payload, _ = buf[pos:]
+
+    def check(self):
+        assert (self.qos != 0 or self.dup == 0), '[MQTT-3.3.1-2]'
+        assert self.qos != 3, '[MQTT-3.3.1-4]'
+        assert ('+' not in self.topic and '#' not in self.topic), '[MQTT-3.3.2-2]'
 
     def _encode(self, buf):
         # TODO: setup flags
@@ -175,6 +200,9 @@ class MQTTPuback(MQTTBody):
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
 
+    def check(self):
+        assert self.flags == 0, 'reserved flags'
+
     def _encode(self, buf):
         set_uint16(self.packetid, buf)
 
@@ -186,6 +214,9 @@ class MQTTPuback(MQTTBody):
 class MQTTPubrec(MQTTBody):
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
+
+    def check(self):
+        assert self.flags == 0, 'reserved flags'
 
     def _encode(self, buf):
         set_uint16(self.packetid, buf)
@@ -199,6 +230,9 @@ class MQTTPubrel(MQTTBody):
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
 
+    def check(self):
+        assert self.flags == 0x2, '[MQTT-3.6.1-1]'
+
     def _encode(self, buf):
         set_uint16(self.packetid, buf)
 
@@ -210,6 +244,9 @@ class MQTTPubrel(MQTTBody):
 class MQTTPubcomp(MQTTBody):
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
+
+    def check(self):
+        assert self.flags == 0, 'reserved flags'
 
     def _encode(self, buf):
         set_uint16(self.packetid, buf)
@@ -227,6 +264,12 @@ class MQTTSubscribe(MQTTBody):
             filter, pos = get_utf8_string(buf, pos)
             qos, pos = get_uint8(buf, pos)
             self.subscriptions.append((filter, qos))
+
+    def check(self):
+        assert self.flags == 0x2, '[MQTT-3.8.1-1]'
+        assert len(self.subscriptions) > 0, '[MQTT-3.8.3-3]'
+        for _, qos in self.subscriptions:
+            assert 0 <= qos <= 2, '[MQTT-3-8.3-4]'
 
     def _encode(self, buf):
         set_uint16(self.packetid, buf)
@@ -248,6 +291,11 @@ class MQTTSuback(MQTTBody):
             code, pos = get_uint8(buf, pos)
             self.codes.append(code)
 
+    def check(self):
+        assert self.flags == 0, 'reserved flags'
+        for code in codes:
+            assert code in [0x0, 0x1, 0x2, 0x80], '[MQTT-3.9.3-2]'
+
     def _encode(self, buf):
         set_uint16(self.packetid, buf)
         for code in self.codes:
@@ -267,6 +315,10 @@ class MQTTUnsubscribe(MQTTBody):
             filter, pos = get_utf8_string(buf, pos)
             self.unsubscriptions.append(filter)
 
+    def check(self):
+        assert self.flags == 0x2, '[MQTT-3.10.1-1]'
+        assert len(self.unsubscriptions) > 0, '[MQTT-3.10.3-2]'
+
     def _encode(self, buf):
         set_uint16(self.packetid, buf)
         for filter in self.unsubscriptions:
@@ -282,6 +334,9 @@ class MQTTUnsuback(MQTTBody):
     def _decode(self, buf, pos):
         self.packetid, pos = get_uint16(buf, pos)
 
+    def check(self):
+        assert self.flags == 0, 'reserved flags'
+
     def _encode(self, buf):
         set_uint16(self.packetid, buf)
 
@@ -294,6 +349,9 @@ class MQTTPingreq(MQTTBody):
     def _decode(self, buf, pos):
         pass
 
+    def check(self):
+        assert self.flags == 0, 'reserved flags'
+
     def _encode(self, buf):
         pass
 
@@ -304,6 +362,9 @@ class MQTTPingresp(MQTTBody):
     def _decode(self, buf, pos):
         pass
 
+    def check(self):
+        assert self.flags == 0, 'reserved flags'
+
     def _encode(self, buf):
         pass
 
@@ -313,6 +374,9 @@ class MQTTPingresp(MQTTBody):
 class MQTTDisconnect(MQTTBody):
     def _decode(self, buf, pos):
         pass
+
+    def check(self):
+        assert self.flags == 0, '[MQTT-3.14.1-1]'
 
     def _encode(self, buf):
         pass
@@ -341,6 +405,7 @@ def remaining_length_decode(buf):
         mult *= 128
         if digit & 128 == 0:
             return value
+    assert False, 'bad remaining length'
 
 def get_binary_string(buf, pos=0):
     sz, = struct.unpack_from('!H', buf, pos)
@@ -350,7 +415,12 @@ def get_binary_string(buf, pos=0):
 
 def get_utf8_string(buf, pos=0):
     data, nextpos = get_binary_string(buf, pos)
-    return data.decode('utf8'), nextpos
+    assert b'\x00' not in data, '[MQTT-1.5.3-2]'
+    try:
+        data = data.decode('utf8')
+    except UnicodeEncodeError:
+        assert False, '[MQTT-1.5.3-1]'
+    return data, nextpos
 
 def get_uint8(buf, pos=0):
     val, = struct.unpack_from('!B', buf, pos)
@@ -397,11 +467,18 @@ def read_paquet(sock):
     if not buf:
         return
     length = remaining_length_decode(buf)
+    # read the whole packet
     while len(buf) < length + 2:
         data = sock.recv(length + 2 - len(buf))
         buf.extend(data)
     packet = MQTTPacket(buf)
+    # check the received packet
+    try:
+        packet.check()
+    except AssertionError as err:
+        print(' Error:', err.args)
     print(packet)
+    # 
     data = packet._encode()
     assert data == buf
     return buf
