@@ -1,3 +1,6 @@
+#!/usr/bin/env python
+# -*- coding: utf8 -*-
+
 import socket
 import select
 import socketserver
@@ -11,6 +14,7 @@ class MQTTProxy:
         self.broker = broker
         self.bqueue = deque()
         self.cqueue = deque()
+
     def run(self):
         fds = [self.client, self.broker]
         queues = [self.cqueue, self.bqueue]
@@ -41,7 +45,6 @@ class MQTTProxy:
                 data = self.bqueue.popleft()
                 self.broker.sendall(data)
 
-            
 
 class MQTTProxyHandler(socketserver.BaseRequestHandler):
     def handle(self):
@@ -51,6 +54,7 @@ class MQTTProxyHandler(socketserver.BaseRequestHandler):
         cproxy.run()
         sock.shutdown(socket.SHUT_RDWR)
         sock.close()
+
     def finish(self):
         print('closing connection from', self.client_address)
         #self.request.shutdown(socket.SHUT_RDWR)
