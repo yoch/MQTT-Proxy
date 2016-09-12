@@ -8,7 +8,11 @@ from collections import deque
 import mqtt_protocol as mqtt
 
 
-class MQTTProxy:
+class MQTTConnectionHandler:
+    """
+    Manage two side connections between client and broker
+    """
+
     def __init__(self, client, broker):
         self.client = client
         self.broker = broker
@@ -49,9 +53,10 @@ class MQTTProxy:
 class MQTTProxyHandler(socketserver.BaseRequestHandler):
     def handle(self):
         print('handle connection from', self.client_address)
+        # connect socket to broker
         sock = socket.create_connection(self.server.broker_address)
-        cproxy = MQTTProxy(self.request, sock)
-        cproxy.run()
+        handler = MQTTConnectionHandler(self.request, sock)
+        handler.run()
         sock.shutdown(socket.SHUT_RDWR)
         sock.close()
 
@@ -67,12 +72,21 @@ class MQTTProxyServer(socketserver.ThreadingTCPServer):
         self.broker_address = broker_address
 
 
-HOST = '0.0.0.0'
-PORT = 1883
-BROKER_ADDR = 'broker.hivemq.com', 1883
-
-#'broker.hivemq.com' 'iot.eclipse.org', 'test.mosquitto.org'
+# python3 mqttproxy.py -broker broker.hivemq.com:1883
+# 'broker.hivemq.com' 'iot.eclipse.org', 'test.mosquitto.org'
 
 if __name__ == '__main__':
-    proxy = MQTTProxyServer((HOST, PORT), BROKER_ADDR)
+    import sys
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-broker', required=True, metavar='HOST:PORT')
+    parser.add_argument('-host', default='0.0.0.0')
+    parser.add_argument('-port', type=int, default=1883)
+
+    args = parser.parse_args(sys.argv[1:])
+    host, port = args.broker.split(':')
+    broker_address = host, int(port)
+
+    proxy = MQTTProxyServer((args.host, args.port), broker_address)
     proxy.serve_forever()
