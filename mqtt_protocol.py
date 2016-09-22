@@ -174,7 +174,7 @@ class MQTTPublish(MQTTBody):
             self.packetid, pos = get_uint16(buf, pos)
         else:
             self.packetid = None
-        self.payload, _ = buf[pos:]
+        self.payload = buf[pos:]
 
     def check(self):
         assert (self.qos != 0 or self.dup == 0), '[MQTT-3.3.1-2]'
@@ -293,7 +293,7 @@ class MQTTSuback(MQTTBody):
 
     def check(self):
         assert self.flags == 0, 'reserved flags'
-        for code in codes:
+        for code in self.codes:
             assert code in [0x0, 0x1, 0x2, 0x80], '[MQTT-3.9.3-2]'
 
     def _encode(self, buf):
